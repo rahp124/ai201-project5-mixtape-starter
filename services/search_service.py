@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 services/search_service.py — Mixtape
 

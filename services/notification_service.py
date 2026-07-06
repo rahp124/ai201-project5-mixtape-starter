@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 services/notification_service.py — Mixtape
 

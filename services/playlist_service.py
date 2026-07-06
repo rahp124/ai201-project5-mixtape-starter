@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 services/playlist_service.py — Mixtape
 
