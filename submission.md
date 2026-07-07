@@ -72,3 +72,97 @@ The README only gives short issue titles, so I matched those with the related te
 ### AI assistance disclosure
 
 I used Copilot to help me read and organize the files, but I checked the code myself and wrote these notes based on what is actually in this repo.
+
+## Milestone 2: Bug Reproduction
+
+These are my reproduction notes for the bugs I picked. I focused only on showing that each bug actually happens. I did not look at root causes or fixes yet.
+
+### Bug 1: The last song in a playlist never shows up
+
+**How I reproduced it:**
+- I ran `python seed_data.py` to load the sample data.
+- I started the Flask app locally.
+- I picked the seeded playlist "Late Night Vibes". Its id was `828f6cb3-162e-4151-b4d1-ecca9ab70c36`.
+- I called `GET /playlists/828f6cb3-162e-4151-b4d1-ecca9ab70c36/songs`.
+- I counted how many songs came back and checked the titles.
+
+**Expected behavior:**
+Late Night Vibes was seeded with 7 songs, so the endpoint should return `count: 7`, and the last song "Free Throws" should be included.
+
+**Actual buggy behavior:**
+The endpoint returned `count: 6`, and "Free Throws" (the last song) was missing. The other songs came back fine, so it is specifically the final song that gets dropped.
+
+**Evidence from my terminal:**
+```
+count: 6
+titles: ['Midnight Drive', 'Still Waters', 'First Light', 'Block Party', 'Late Night Session', 'Golden Hour']
+Free Throws present: False
+```
+
+### Bug 2: Rating a song does not create a notification
+
+**How I reproduced it:**
+- I ran `python seed_data.py` to load the sample data.
+- I used "nova" as the original song sharer and "darius" as the person rating the song.
+  - nova id: `4d65c810-46c5-4a3e-90a2-7119a3c2cd78`
+  - darius id: `c0616919-1f6e-43d7-a0e5-592bf5825ea0`
+  - "Midnight Drive" song id: `942719c0-1a3b-43bb-8799-09d71061088b`
+- Before rating, I checked nova's notifications with `GET /users/<nova_id>/notifications`.
+- Then I sent `POST /songs/942719c0-1a3b-43bb-8799-09d71061088b/rate` with the body `{"user_id":"c0616919-1f6e-43d7-a0e5-592bf5825ea0","score":5}`.
+- The rating request succeeded and returned a rating object with score 5.
+- After rating, I checked nova's notifications again to see if a new one showed up.
+
+**Expected behavior:**
+When darius rates nova's shared song, nova should get a new notification about the rating, similar to how she gets one when someone adds her song to a playlist. So the notification count should go from 1 to 2.
+
+**Actual buggy behavior:**
+The rating was clearly saved (the POST returned a valid rating with score 5), but nova's notification count stayed at 1. No new "rated your song" notification was created. The only notification she had was still the old playlist-add one.
+
+**Evidence from my terminal:**
+```
+Before count: 1
+Before bodies: ["darius added your song 'Midnight Drive' to the playlist 'Late Night Vibes'."]
+
+(rating POST returned score 5)
+
+After count: 1
+After bodies: ["darius added your song 'Midnight Drive' to the playlist 'Late Night Vibes'."]
+```
+The before and after are identical, which shows the rating went through but no notification was ever created.
+
+### Bug 3: Friends Listening Now shows people from a while ago
+
+For my third bug I first tried the search duplicates issue (#3 in the README). I searched for the multi-tag song "Crown Heights Anthem" with `GET /songs/search?q=Crown%20Heights`, since it has 3 tags and seemed most likely to duplicate, but it only came back once:
+```
+count: 1
+titles: ['Crown Heights Anthem']
+Crown Heights Anthem occurrences: 1
+```
+Since I could not reproduce a duplicate through the search endpoint, I switched to the "Friends Listening Now" issue instead, which I was able to reproduce clearly.
+
+**How I reproduced it:**
+- I ran `python seed_data.py` to load the sample data.
+- I started the Flask app locally.
+- I used "kenji" as the current user, because in the seed data his only friend with a listening event inside the window is "nova".
+  - kenji id: `1b849c15-9506-4334-a6e7-25479173b6ec`
+  - nova id: `00919c2d-3344-4b06-ae7b-6d311194e24e`
+- I called `GET /feed/1b849c15-9506-4334-a6e7-25479173b6ec/listening-now`.
+- I compared the `listened_at` timestamp in the response with the current server time.
+
+**Expected behavior:**
+"Friends Listening Now" should only show friends who are listening right now (or in the last few minutes). If a friend last listened hours ago, they should not be in this feed anymore.
+
+**Actual buggy behavior:**
+The feed still listed nova as "listening now" even though her listening event was about 2 hours old. Her `listened_at` was `2026-07-07T05:27:23`, but the server time when I made the request was `2026-07-07T07:29:12` — roughly 2 hours later. So someone who listened 2 hours ago is still being treated as listening right now.
+
+**Evidence from my terminal:**
+```
+--- kenji listening-now ---
+{"count":1,"feed":[{"friend":{"username":"nova", ...},
+  "listened_at":"2026-07-07T05:27:23.171064",
+  "song":{"title":"Midnight Drive", ...}}]}
+
+--- server current time (UTC) ---
+2026-07-07T07:29:12.985355+00:00
+```
+The one entry in the "listening now" feed has a `listened_at` about 2 hours before the current time, which shows the feed is including stale events instead of only current ones.
