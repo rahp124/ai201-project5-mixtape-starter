@@ -166,3 +166,106 @@ The feed still listed nova as "listening now" even though her listening event wa
 2026-07-07T07:29:12.985355+00:00
 ```
 The one entry in the "listening now" feed has a `listened_at` about 2 hours before the current time, which shows the feed is including stale events instead of only current ones.
+
+## Milestone 3: Root Cause Analysis and Fixes
+
+I fixed three bugs: the missing last playlist song (Issue #5), the missing rating notification (Issue #4), and the stale "Friends Listening Now" feed (Issue #2). Each entry below covers how I reproduced it, how I found the cause, the exact cause, and my fix.
+
+### Issue #5: The last song in a playlist never shows up
+
+**How I reproduced it:**
+I ran `python seed_data.py`, started the Flask app, and queried the seeded playlist "Late Night Vibes" (id `828f6cb3-162e-4151-b4d1-ecca9ab70c36`) with `GET /playlists/828f6cb3-162e-4151-b4d1-ecca9ab70c36/songs`. The playlist was seeded with 7 songs, but the response came back with only 6:
+```
+count: 6
+titles: ['Midnight Drive', 'Still Waters', 'First Light', 'Block Party', 'Late Night Session', 'Golden Hour']
+Free Throws present: False
+```
+The last song, "Free Throws", was missing.
+
+**How I found the root cause:**
+The request hits `get_songs()` in [routes/playlists.py](routes/playlists.py), which is just a wrapper that calls `get_playlist_songs()` and returns it with a count, so there was no logic there to blame. I followed the call into `get_playlist_songs()` in [services/playlist_service.py](services/playlist_service.py). I read the database query first (it joins `Song` to the `playlist_entries` table, filters to the one playlist, and orders by `position` ascending) and confirmed it was correct and returned all the songs. That pointed me at the one line after the query — the return statement.
+
+**The root cause:**
+The function returned `[song.to_dict() for song in songs[:-1]]`. The `[:-1]` slice means "every element except the last one," so after the query correctly fetched the full, position-ordered list, the code sliced off the final element right before returning. Because the list is ordered ascending by position, the dropped element is always the last song in the playlist. That is a classic off-by-one: the query was never wrong, but the slice discarded one good row. The function's own docstring even says it "returns all songs in the playlist," which the slice contradicted.
+
+**My fix and side-effect check:**
+I removed the `[:-1]` slice so the comprehension runs over the whole list: `return [song.to_dict() for song in songs]`. This fixes the cause because there is nothing else trimming the data — the query already returns everything in order, so once the slice is gone the full list is returned. I verified the fix by reseeding and re-running the same query I used to reproduce it:
+```
+count: 7
+titles: ['Midnight Drive', 'Still Waters', 'First Light', 'Block Party', 'Late Night Session', 'Golden Hour', 'Free Throws']
+Free Throws present: True
+```
+The count is back to 7 and "Free Throws" is present and last. I checked the related behavior too: ordering is still correct (ascending by position), an empty playlist still returns an empty list, and all three tests in `tests/test_playlists.py` pass. No other tests regressed.
+
+### Issue #4: Rating a song does not create a notification
+
+**How I reproduced it:**
+I ran `python seed_data.py` and used "nova" as the song sharer and "darius" as the rater (nova id `4d65c810-46c5-4a3e-90a2-7119a3c2cd78`, darius id `c0616919-1f6e-43d7-a0e5-592bf5825ea0`, "Midnight Drive" song id `942719c0-1a3b-43bb-8799-09d71061088b`). I checked nova's notifications, then sent `POST /songs/942719c0-1a3b-43bb-8799-09d71061088b/rate` with `{"user_id":"c0616919-1f6e-43d7-a0e5-592bf5825ea0","score":5}`, then checked nova's notifications again:
+```
+Before count: 1
+Before bodies: ["darius added your song 'Midnight Drive' to the playlist 'Late Night Vibes'."]
+
+(rating POST returned score 5)
+
+After count: 1
+After bodies: ["darius added your song 'Midnight Drive' to the playlist 'Late Night Vibes'."]
+```
+The rating saved fine, but nova got no new notification.
+
+**How I found the root cause:**
+The route `rate()` in [routes/songs.py](routes/songs.py) only validates `user_id` and `score` and calls `rate_song()`, so it does no notification work. I followed it into `rate_song()` in [services/notification_service.py](services/notification_service.py) and read it top to bottom: it validates the score, loads the song and rater, saves the rating (new or updated), commits, and returns. That was the whole function — it never touched notifications. I then compared it to `add_to_playlist()` right above it in the same file, which does the "someone interacted with your shared song" case correctly by calling `create_notification()` for the song's sharer. That comparison made the missing step obvious.
+
+**The root cause:**
+`rate_song()` never called `create_notification()`. This was a missing call, not a broken one — the rating was persisted correctly (the POST returned a valid rating with score 5), but because no notification row was ever created, the sharer's notification count stayed the same. That is exactly why nova's count was 1 before and 1 after.
+
+**My fix and side-effect check:**
+I added a notification step at the end of `rate_song()`, mirroring the pattern already used in `add_to_playlist()`, using the existing `create_notification()` helper and the `song_rated` type its docstring already mentions:
+```python
+if is_new_rating and song.shared_by != user_id:
+    create_notification(
+        user_id=song.shared_by,
+        notification_type="song_rated",
+        body=f"{rater.username} rated your song '{song.title}' {score} out of 5.",
+    )
+```
+I scoped it with an `is_new_rating` flag so it only fires on a first-time rating (not when someone just changes their score), and with `song.shared_by != user_id` so nobody gets notified for rating their own song. This fixes the cause by restoring the missing interaction-to-notification link. I verified the fix by reseeding and replaying my reproduction, then checking the two edge cases:
+```
+Before count: 1
+After count: 2
+After bodies: ["darius rated your song 'Midnight Drive' 5 out of 5.",
+               "darius added your song 'Midnight Drive' to the playlist 'Late Night Vibes'."]
+After re-rate count: 2
+After nova self-rates count: 2
+```
+darius rating nova's song raised her count from 1 to 2 with the new "rated your song" body; re-rating the same song kept the count at 2 (no duplicate); and nova rating her own song added nothing. Rating persistence itself was unchanged, and no tests regressed.
+
+### Issue #2: Friends Listening Now shows people from a while ago
+
+**How I reproduced it:**
+I ran `python seed_data.py`, started the app, and used "kenji" as the current user (id `1b849c15-9506-4334-a6e7-25479173b6ec`) because his only friend with an event in the window was nova (id `00919c2d-3344-4b06-ae7b-6d311194e24e`). I called `GET /feed/1b849c15-9506-4334-a6e7-25479173b6ec/listening-now` and compared the `listened_at` with the server time:
+```
+--- kenji listening-now ---
+{"count":1,"feed":[{"friend":{"username":"nova", ...},
+  "listened_at":"2026-07-07T05:27:23.171064", ...}]}
+
+--- server current time (UTC) ---
+2026-07-07T07:29:12.985355+00:00
+```
+nova showed up as "listening now" even though her event was about 2 hours old.
+
+**How I found the root cause:**
+The route `listening_now()` in [routes/feed.py](routes/feed.py) just calls `get_friends_listening_now()` and wraps the result, so it does no filtering. Inside `get_friends_listening_now()` in [services/feed_service.py](services/feed_service.py), I traced the logic: it builds a cutoff as `now - RECENT_THRESHOLD`, queries friends' listening events where `listened_at >= cutoff`, and dedups to the most recent event per friend. The query, ordering, and dedup all looked right, so the only thing deciding "how recent counts as now" was the `RECENT_THRESHOLD` constant at the top of the file.
+
+**The root cause:**
+`RECENT_THRESHOLD` was set to `timedelta(hours=24)`. "Friends Listening Now" is meant to show who is listening right now, but a 24-hour window counts anyone who listened at any point in the past day as currently listening. That is why nova's 2-hour-old event still showed up — 2 hours is far inside a 24-hour window. The condition itself (`listened_at >= cutoff`) was fine; the window was just far too wide.
+
+**My fix and side-effect check:**
+I changed the constant to `RECENT_THRESHOLD = timedelta(minutes=30)`. The seed data confirms this is the intended window — its comments say events within the past 30 minutes should appear and older ones should not, and it seeds the "recent" events at 10-20 minutes ago and the rest at 2+ hours ago. With a 30-minute cutoff, the genuine recent events still pass the filter and the stale ones are excluded before dedup. I verified by reseeding and re-checking the same feeds:
+```
+kenji listening-now count: 0
+nova listening-now count: 3
+  darius: 10 min ago
+  simone: 15 min ago
+  kenji: 20 min ago
+```
+kenji's feed went from `count: 1` (nova, ~2 hours stale) to `count: 0`, and every entry left in nova's feed was within the last 20 minutes. I checked that real recent activity is preserved — nova's feed still shows her three friends who listened 10-20 minutes ago — and that the separate `activity` feed, which is intentionally not recency-filtered, was unaffected. No tests regressed.
