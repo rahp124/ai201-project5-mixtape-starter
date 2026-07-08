@@ -71,7 +71,7 @@ The README only gives short issue titles, so I matched those with the related te
 
 ### AI assistance disclosure
 
-I used Copilot to help me read and organize the files, but I checked the code myself and wrote these notes based on what is actually in this repo.
+I used Claude Code to help me read and organize the files, but I checked the code myself and wrote these notes based on what is actually in this repo. There is a fuller account of how I used AI across all milestones in the "AI Usage" section at the end of this document.
 
 ## Milestone 2: Bug Reproduction
 
@@ -171,6 +171,8 @@ The one entry in the "listening now" feed has a `listened_at` about 2 hours befo
 
 I fixed three bugs: the missing last playlist song (Issue #5), the missing rating notification (Issue #4), and the stale "Friends Listening Now" feed (Issue #2). Each entry below covers how I reproduced it, how I found the cause, the exact cause, and my fix.
 
+These are the same three bugs I reproduced in Milestone 2, just labeled by their README issue numbers: Bug 1 = Issue #5 (last playlist song), Bug 2 = Issue #4 (rating notification), Bug 3 = Issue #2 (Friends Listening Now).
+
 ### Issue #5: The last song in a playlist never shows up
 
 **How I reproduced it:**
@@ -269,3 +271,14 @@ nova listening-now count: 3
   kenji: 20 min ago
 ```
 kenji's feed went from `count: 1` (nova, ~2 hours stale) to `count: 0`, and every entry left in nova's feed was within the last 20 minutes. I checked that real recent activity is preserved — nova's feed still shows her three friends who listened 10-20 minutes ago — and that the separate `activity` feed, which is intentionally not recency-filtered, was unaffected. No tests regressed.
+
+## AI Usage
+
+I used Claude Code as an AI coding assistant throughout this project. Here is how I used it in each area:
+
+- **Codebase navigation:** I had it help me map the repo structure (routes, services, models, tests) and locate which service file backed each of the five issues, so I knew where to start for each bug.
+- **Tracing:** For each bug I used it to trace the call chain from the HTTP route into the service function and down to the model/table (for example, `GET /playlists/<id>/songs` → `get_songs()` → `get_playlist_songs()` → the `playlist_entries` table), which confirmed the routes were thin wrappers and the bugs lived in the services.
+- **Debugging:** I used it to reproduce each bug against the seeded data, read the suspicious function closely, and pin down the exact fault — the `songs[:-1]` slice in `get_playlist_songs()`, the missing `create_notification()` call in `rate_song()`, and the 24-hour `RECENT_THRESHOLD` in `feed_service.py`. I verified every fix by reseeding and re-running the reproduction, and by running `pytest tests/`.
+- **Documentation:** I used it to help structure and word my Milestone 2 reproduction notes and my Milestone 3 root cause analysis, then checked each explanation against the actual code and the terminal output.
+
+I reviewed and confirmed every code change and every claim in this document myself.
