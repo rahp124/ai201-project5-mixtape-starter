@@ -1,3 +1,18 @@
+## AI Usage
+
+I used Claude Code as an AI assistant while working on this project, but I stayed in control of the actual investigation and writing. Here is where it helped:
+
+- Summarizing the codebase structure in Milestone 1 so I could get oriented faster.
+- Tracing the route-to-service call chains for each bug (for example, `GET /playlists/<id>/songs` → `get_songs()` → `get_playlist_songs()`).
+- Understanding what the suspicious service functions were actually doing.
+- Comparing working and broken code paths — this mattered most for the notification bug, where lining up `rate_song()` against `add_to_playlist()` made the missing `create_notification()` call obvious.
+- Drafting and revising parts of my codebase map and my root cause analysis entries.
+- Checking whether my explanations were specific enough instead of vague.
+
+I did not take the AI's output at face value. I verified its suggestions by reading the actual files, running `curl` commands against the running app, checking the seed data, and confirming the behavior manually before and after each fix.
+
+One AI suggestion, about the search "duplicate results" bug, turned out to be incomplete: my first reproduction attempt (searching "Crown Heights Anthem") did not actually trigger a duplicate. Because I could not reproduce it with real terminal evidence, I did not document it as one of my bugs, and instead wrote up bugs I could actually reproduce and verify myself.
+
 ## Milestone 1: Codebase Map
 
 ### Main files and folders
@@ -71,7 +86,7 @@ The README only gives short issue titles, so I matched those with the related te
 
 ### AI assistance disclosure
 
-I used Claude Code to help me read and organize the files, but I checked the code myself and wrote these notes based on what is actually in this repo. There is a fuller account of how I used AI across all milestones in the "AI Usage" section at the end of this document.
+I used Claude Code to help me read and organize the files, but I checked the code myself and wrote these notes based on what is actually in this repo. There is a fuller account of how I used AI across all milestones in the "AI Usage" section at the top of this document.
 
 ## Milestone 2: Bug Reproduction
 
@@ -271,14 +286,3 @@ nova listening-now count: 3
   kenji: 20 min ago
 ```
 kenji's feed went from `count: 1` (nova, ~2 hours stale) to `count: 0`, and every entry left in nova's feed was within the last 20 minutes. I checked that real recent activity is preserved — nova's feed still shows her three friends who listened 10-20 minutes ago — and that the separate `activity` feed, which is intentionally not recency-filtered, was unaffected. No tests regressed.
-
-## AI Usage
-
-I used Claude Code as an AI coding assistant throughout this project. Here is how I used it in each area:
-
-- **Codebase navigation:** I had it help me map the repo structure (routes, services, models, tests) and locate which service file backed each of the five issues, so I knew where to start for each bug.
-- **Tracing:** For each bug I used it to trace the call chain from the HTTP route into the service function and down to the model/table (for example, `GET /playlists/<id>/songs` → `get_songs()` → `get_playlist_songs()` → the `playlist_entries` table), which confirmed the routes were thin wrappers and the bugs lived in the services.
-- **Debugging:** I used it to reproduce each bug against the seeded data, read the suspicious function closely, and pin down the exact fault — the `songs[:-1]` slice in `get_playlist_songs()`, the missing `create_notification()` call in `rate_song()`, and the 24-hour `RECENT_THRESHOLD` in `feed_service.py`. I verified every fix by reseeding and re-running the reproduction, and by running `pytest tests/`.
-- **Documentation:** I used it to help structure and word my Milestone 2 reproduction notes and my Milestone 3 root cause analysis, then checked each explanation against the actual code and the terminal output.
-
-I reviewed and confirmed every code change and every claim in this document myself.
